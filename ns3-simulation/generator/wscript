@@ -1,0 +1,27 @@
+## -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
+
+def build(bld):
+    module = bld.create_ns3_module('generator', ['internet', 'config-store','stats'])
+    module.source = [
+        'model/probing-client.cc',
+        'model/probing-server.cc',
+        'model/cdf-application.cc',
+        ]
+
+    fitnets_test = bld.create_ns3_module_test_library('generator')
+    fitnets_test.source = [
+        ]
+
+    headers = bld(features='ns3header')
+    headers.module = 'generator'
+    headers.source = [
+        'model/probing-client.h',
+        'model/probing-server.h',
+        'model/cdf-application.h',
+        'model/experiment-tags.h',
+        ]
+
+    if (bld.env['ENABLE_EXAMPLES']):
+        bld.recurse('examples')
+
+    bld.ns3_python_bindings()

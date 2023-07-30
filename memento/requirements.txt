@@ -1,0 +1,7 @@
+# General dependencies
+numpy
+scipy
+KDEpy  # Kernel density estimation for continuous variables
+
+# Testing dependencies
+pytest

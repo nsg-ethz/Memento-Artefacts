@@ -1,0 +1,28 @@
+{
+	"name": "ns-3",
+	"dockerFile": "Dockerfile",
+	"runArgs": [
+		"--cap-add=SYS_PTRACE",
+		"--security-opt",
+		"seccomp=unconfined"
+	],
+	"mounts": [
+		// Mount current folder into ns3 scratch directory so waf can find it
+		"source=${localWorkspaceFolder}/simulation,target=/ns3/scratch,type=bind,consistency=cached",
+		"source=${localWorkspaceFolder}/generator,target=/ns3/src/generator,type=bind,consistency=cached"
+	],
+	// Set *default* container specific settings.json values on container create.
+	"settings": {
+		"terminal.integrated.shell.linux": "/bin/bash",
+		"editor.formatOnSave": true
+	},
+	// Add the IDs of extensions you want installed when the container is created.
+	"extensions": [
+		"ms-vscode.cpptools",
+		"ms-python.python",
+	]
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+	// Use 'postCreateCommand' to run commands after the container is created.
+	//"postCreateCommand": ""
+}

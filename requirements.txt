@@ -1,0 +1,27 @@
+jupyter
+requests
+types-requests
+pandas
+kdepy
+scipy
+scikit-learn
+seaborn
+scikit-optimize
+sshfs
+universal_pathlib>=0.0.24
+
+# For the puffer ttp
+torch
+torchvision
+
+# ns3.
+tensorflow
+tensorflow-addons
+
+# Testing
+pytest
+pytest-mock
+
+# Submodules
+-e ./python-experiment-helpers
+-e ./memento

@@ -1,0 +1,22 @@
+# Libraries
+click
+click-log
+click-pathlib
+cloudpickle
+watchdog
+
+#pandas
+numpy
+seaborn
+
+# Slack
+requests
+
+# Plotting
+seaborn
+
+# Testing
+pytest
+pytest-mock
+# tensorflow
+# torch

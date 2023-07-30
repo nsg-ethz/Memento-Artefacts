@@ -1,0 +1,2 @@
+[TYPECHECK]
+signature-mutators=experiment_helpers.config.load_config
