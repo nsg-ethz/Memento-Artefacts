@@ -73,6 +73,18 @@ class PufferMemento(memento.Memento):
             distances = "both"
         if distances in ("both", "input", "output"):
             _distances = []
+        elif distances == "euclidean":
+            _sort = ["ydiscrete", "x"]
+            _distances = [
+                memento.Minowski('x', p=2.0, workers=self.workers),
+                memento.Minowski('ydiscrete', p=2.0, workers=self.workers),
+            ]
+        elif distances == "euclidean+bbdr":
+            _sort = ["ydiscrete", "yhat", "x"]
+            _distances = [
+                memento.Minowski('yhat', p=2.0, workers=self.workers),
+                memento.Minowski('ydiscrete', p=2.0, workers=self.workers),
+            ]
         else:
             _distances = distances
 
@@ -108,7 +120,7 @@ class PufferMemento(memento.Memento):
             if predictor.is_dir():
                 predictor = predictor / self.default_modelfile
             predictor = load_model(predictor)
-        except ValueError:
+        except (ValueError, TypeError):
             pass  # Predictor is not a path.
         super().update_predictor(predictor)
 
@@ -193,7 +205,7 @@ class PufferLARS(memento.alternatives.LossAwareBalancedReservoir):
             if predictor.is_dir():
                 predictor = predictor / self.default_modelfile
             predictor = load_model(predictor)
-        except ValueError:
+        except (ValueError, TypeError):
             pass  # Predictor is not a path.
         super().update_predictor(predictor)
 
@@ -231,7 +243,7 @@ class PufferSampleMetricBase(memento.alternatives.SampleMetricMemory):
             if predictor.is_dir():
                 predictor = predictor / self.default_modelfile
             predictor = load_model(predictor)
-        except ValueError:
+        except (ValueError, TypeError):
             pass  # Predictor is not a path.
         super().update_predictor(predictor)
 
@@ -289,3 +301,29 @@ class PufferStalled(PufferSampleMetricBase):
         """
         # Read as: Return 0 if in stalled session else 1.
         return np.where(data['stalled'], 0., 1.)
+
+
+class PufferQBC(memento.alternatives.QueryByCommitteeMemory):
+    """Query by committee for Puffer."""
+    def __init__(self, *args, index: int = 0, workers=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.workers = workers
+        self.default_modelfile = f"py-{index}.pt"
+
+    def update_predictor(self, predictor):
+        """Update the internal predictor.
+
+        Accept model directory or path as well.
+        """
+        try:
+            predictor = Path(predictor)  # Works for str and PathLike.
+            if predictor.is_dir():
+                predictor = predictor / self.default_modelfile
+            predictor = load_model(predictor)
+        except (ValueError, TypeError):
+            pass  # Predictor is not a path.
+        super().update_predictor(predictor)
+
+    def predict_probabilities(self, predictor, x):
+        """Softmax prediction of bin probabilities."""
+        return predict_probabilities(predictor, x, workers=self.workers)

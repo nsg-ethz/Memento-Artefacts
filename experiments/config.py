@@ -16,7 +16,7 @@ class ExperimentConfig(BaseConfig):
         """Consistent formatting for day object."""
         return dtobj.strftime(self.datefmt)
 
-    # Slurm resources.
+    # Slurm resources (only considerd with --slurm flag).
     slurm_cpus = 1
     slurm_mem = 32
     slurm_gpus = 1

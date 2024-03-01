@@ -14,6 +14,7 @@ import logging
 import logging.handlers
 import pickle
 import queue
+import sys
 import time
 import uuid
 
@@ -84,7 +85,7 @@ def client_logging(label: str, config: BaseConfig):
 # ==========================
 
 @contextlib.contextmanager
-def server_logging(name: str, patterns: Sequence[str], config: BaseConfig):
+def server_logging(name: str, config: BaseConfig):
     """Contextmanager to run a socker-based log server in a separate thread.
 
     Depending on config, create handlers for:
@@ -109,7 +110,9 @@ def server_logging(name: str, patterns: Sequence[str], config: BaseConfig):
     handlers.extend(make_filehandlers(config))
     slackhandler = make_slackhandler(  # The title is for the first message.
         config,
-        title=f"Parametrized experiments: `{name} {' '.join(patterns)}`")
+        # Exact command line arguments for easier re-runnning.
+        title=f"`{' '.join(sys.argv)}`",
+    )
     if slackhandler:
         handlers.append(slackhandler)
     listener = logging.handlers.QueueListener(server_queue, *handlers)
@@ -236,7 +239,7 @@ class ExperimentNameFilter(logging.Filter):
     def filter(self, record):
         """Add experiment name to record."""
         record.experiment = self.experiment
-        record.experiment_prefix = '`{self.experiment}` '
+        record.experiment_prefix = f'`{self.experiment}` '
         record.msg = f'{record.experiment_prefix}{record.msg}'
         return True
 
@@ -311,21 +314,29 @@ class PickleWatcher(FileSystemEventHandler):
     Events that were sent to specific logger go to the original logger.
     """
 
-    def __init__(self, logger, event, *args, **kwargs):
+    def __init__(self, logger, event, *args, attempts=10, sleep=0.1, **kwargs):
         super().__init__(*args, **kwargs)
         self.logger = logger
         self.event = event
+        self.attempts = attempts
+        self.sleep = sleep
 
     def on_any_event(self, event):
         """Process event if it has the correct type."""
         path = event.src_path
         if path.endswith(".log") and (event.event_type == self.event):
             try:
-                with open(path, "rb") as file:
-                    record = pickle.load(file)
-            except:  # pylint: disable=bare-except
-                self.logger.warning("Could not process a log record.")
-                return
+                for attempt in range(1, self.attempts + 1):
+                    try:
+                        with open(path, "rb") as file:
+                            record = pickle.load(file)
+                        break  # Success!
+                    except:  # pylint: disable=bare-except
+                        if attempt < self.attempts:
+                            time.sleep(self.sleep)
+                            continue
+                        self.logger.warning("Could not process a log record.")
+                        return
             finally:
                 # Remove file whether it could be parsed or not.
                 Path(path).unlink()
@@ -370,7 +381,7 @@ class SlackThread(logging.Handler):
         self.timeout = timeout
 
         # Formatting of root message.
-        self.title = f"`{title}`" if title else ""
+        self.title = title  # f"`{title}`" if title else ""
         self.status_icon = ""
 
         # Thread data!
@@ -472,7 +483,10 @@ class SlackThread(logging.Handler):
         # Split traceback
         if "Traceback" in error:
             message, traceback = error.split("Traceback", maxsplit=1)
-            traceback = "Traceback" + traceback
+            lines = traceback.splitlines()
+            if len(lines) > 1:
+                traceback = f"(...)\n{lines[-1]}"
+            # traceback = "Traceback" + traceback
         else:
             message = error
             traceback = ""

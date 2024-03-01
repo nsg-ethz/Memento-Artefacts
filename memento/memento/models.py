@@ -157,6 +157,7 @@ class Memento(utils.Random, bases.MemoryBase):
                  temperature: float = 0.01,
                  forget: float = 0.0,
                  distances: Sequence[DISTANCETYPE] = None,
+                 distance_sample_fraction: Optional[float] = None,
                  require_all_distances: bool = False,
                  # For Memento, batching is not optional.
                  batching_size: int = 256,
@@ -171,6 +172,11 @@ class Memento(utils.Random, bases.MemoryBase):
         # Experimental features.
         self.insert_chunksize = insert_chunksize
         self.forget = forget
+        self.distance_sample_fraction = distance_sample_fraction
+        if self.distance_sample_fraction is not None:
+            logging.warning(
+                "Using experimental feature: distance_sample_fraction.")
+            assert 0 < self.distance_sample_fraction < 1
         # End of experimental.
         super().__init__(*args, batching_size=batching_size, **kwargs)
 
@@ -215,9 +221,24 @@ class Memento(utils.Random, bases.MemoryBase):
         ]))
 
         logger.debug("Computing distance matrices and applying kernel.")
-        # Ensure all distance matrices are up-to-date.
-        # (Rely on the distances to cache old results for performance)
-        matrices = self.compute_matrices(batches)
+        if self.distance_sample_fraction is None:  # default case.
+            matrices = self.compute_matrices(batches)
+        else:
+            logger.debug("Sampling `%i` batches for distance computation.",
+                         self.distance_sample_fraction)
+            sample_batches, sample_idx = \
+                self._sample_batches(batches, return_index=True)
+            # Implementation note: by using the samples as first argument,
+            # we essentially compute the transpose of the distance matrices,
+            # so we need to transpose it back afterwards. But in doing so, we
+            # can parallelize more efficiently.
+            matrices = [matrix.T for matrix in
+                        self.compute_matrices(sample_batches, batches)]
+            # Create lookup for updates, to avoid scanning for every index.
+            sample_lookup = {
+                # Orignal index: index in sampled distance matrix.
+                idx: i for i, idx in enumerate(sample_idx)
+            }
         if not matrices:  # Fall back to FIFO if there are no distances.
             return {k: v[:max_samples]
                     for k, v in utils.merge_datadicts(batches).items()}
@@ -237,15 +258,32 @@ class Memento(utils.Random, bases.MemoryBase):
         mask = np.ones(len(batches), dtype=bool)  # All true first.
         indices = np.arange(len(batches))
         current_samples = sum(utils.sample_count(_b) for _b in batches)
+
+        # When using (experimental) distance_sample_fraction, we can safe a
+        # lot of time by skipping the recompute step if we removed a batch
+        # that was not sampled, i.e. has no impact on the density.
+        recompute = True  # Default case: recompute every time.
+        remove_cache = None  # Only used in (experimental) sampling.
         while current_samples > max_samples:
-            assert len(batches) == mask.sum()
-            # Now divide by number of samples to get mean from sum.
-            n_batches = len(batches)
-            combined = self.agg([dens[mask] / n_batches for dens in densities])
+            if recompute:
+                assert len(batches) == mask.sum()
+                # Now divide by number of samples to get mean from sum.
+                n_batches = len(batches)
+                combined = self.agg([dens[mask] / n_batches
+                                    for dens in densities])
+                if ((self.distance_sample_fraction is not None) and
+                        (self.temperature != 0)):
+                    # Avoid recomputing probabilities and sampling every round.
+                    # See below for explanation of probabilities.
+                    probs = softmax(combined / self.temperature)
+                    remove_cache = self.rng.choice(
+                        len(probs), size=len(batches), p=probs, replace=False)
 
             if self.temperature == 0:
                 # Highest local density (last/newest batch if equal).
                 to_remove = utils.last_argmax(combined)
+            elif remove_cache is not None:  # Experimental!
+                to_remove, remove_cache = remove_cache[0], remove_cache[1:]
             else:
                 # Use softmax to determine probabilities for replacement.
                 # High density -- high probability
@@ -254,15 +292,46 @@ class Memento(utils.Random, bases.MemoryBase):
 
             # Remove and mask batch (careful: using the original index).
             original_index = indices[mask][to_remove]
-
             current_samples -= utils.sample_count(batches[to_remove])
             del batches[to_remove]
             mask[original_index] = False
             # Update remaining densities inplace.
-            for density, matrix in zip(densities, matrices):
-                density[mask] -= matrix[mask, original_index]
+            if self.distance_sample_fraction is None:  # default case.
+                for density, matrix in zip(densities, matrices):
+                    density[mask] -= matrix[mask, original_index]
+            else:  # Experimental feature: Subsampled distance matrices.
+                try:
+                    col_idx = sample_lookup[original_index]
+                    for density, matrix in zip(densities, matrices):
+                        density[mask] -= matrix[mask, col_idx]
+                    recompute = True
+                except KeyError:
+                    # The removed index was not sampled, no need to update.
+                    # We can skip the recompute step and just remove the item.
+                    combined = np.delete(combined, to_remove)
+                    recompute = False
+                    if remove_cache is not None:
+                        remove_cache = np.where(  # Shift remaining indices.
+                            remove_cache > to_remove,
+                            remove_cache - 1, remove_cache,
+                        )
 
         return utils.merge_datadicts(batches)
+
+    def _sample_batches(self, batches, sampling_factor=None,
+                        return_index=False):
+        """Experimental feature: sample a fraction of batches (at least 1)."""
+        if sampling_factor is None:
+            sampling_factor = self.distance_sample_fraction
+        size = len(batches)
+        sample_size = np.ceil(
+            size * self.distance_sample_fraction).astype(int)
+        sample_idx = self.rng.choice(size, sample_size, replace=False)
+        samples = [batches[i] for i in sample_idx]
+        if return_index:
+            return samples, sample_idx
+        return samples
+
 
     def coverage_change(self, reference_data, current_data=None, predict=True,
                         return_stats=False, return_densities=False):
@@ -285,6 +354,12 @@ class Memento(utils.Random, bases.MemoryBase):
         ref_batches = self.batch(reference_data)
         cur_batches = self.batch(current_data
                                  if current_data is not None else self.data)
+        if self.distance_sample_fraction is not None:
+            # As we sample both ref and current, sample each with sqrt so that
+            # we in total get sample_fraction of computations.
+            fraction = np.sqrt(self.distance_sample_fraction)
+            ref_batches = self._sample_batches(ref_batches, fraction)
+            cur_batches = self._sample_batches(cur_batches, fraction)
 
         if not ref_batches:
             raise RuntimeError(

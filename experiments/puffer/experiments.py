@@ -76,7 +76,7 @@ data_first_and_last = {
     # Use data from 2021 for experiments.
     'comparison': ("2021-01-01", "2022-06-01"),
     # Evaluate long-term results until cutoff before submission.
-    'eval': ("2020-04-09", "2023-07-17"),
+    'eval': ("2020-04-09", "2023-08-28"),
     # Current memento deployment, including latest data.
     'deployment': ("2022-05-01", _today),
 }
@@ -212,6 +212,23 @@ for start, end in comparison_runs:
     for bsize in [128, 256, 512, 1024, 2048]:
         replay_exps[f'comparison/batchsize/{bsize}/{run}'] = \
             _parametrize_replay(batching_size=bsize)
+        # Not used: this is still incredibly slow; does not match batching.
+        # Also compare to subsampling the memory.
+        # Batches reduces size by n**2, subsampling by n, so adjust.
+        # Only for default batchsize, because this is unoptimized and slow.
+        # if bsize == 256:
+        #     replay_exps[f'comparison/distancesampling/{bsize}/{run}'] = \
+        #         _parametrize_replay(
+        #             batching_size=1,  # No batching, sample instead.
+        #             distance_sample_fraction=1.0/bsize**2
+        #     )
+
+    # Using a euclidean distance instead of BBDR + distribution distance.
+    # in the paper we only show one of both as they perform basically equal.
+    replay_exps[f'comparison/euclidean/{run}'] = \
+        _parametrize_replay(distances='euclidean')
+    replay_exps[f'comparison/euclidean+bbdr/{run}'] = \
+        _parametrize_replay(distances='euclidean+bbdr')
 
     # Optional: Only consider input or output space.
     # Both are beneficial; not shown in paper; uncomment to run.
@@ -331,6 +348,18 @@ for start, end in comparison_runs:
         #         replay_kwargs=dict(stall_upscale=upscale),
         # )
 
+    # Alteratively, try selecting samples via QBC, optionally also using the
+    # ensemble to predict (MatchMaker).
+    # Note: Currently both QBC and MatchMaker just keep the last n models so
+    # we don't need to explicitly synchronize them.
+    # Test a small committee, a larger committee, and a large plus MatchMaker.
+    # replay_exps[f"combinations/qbc-small/{run}"] = _parametrize_replay(
+    #     memcls=memory.PufferQBC, size=memsize, committee_size=2)
+    replay_exps[f"combinations/qbc/{run}"] = _parametrize_replay(
+        memcls=memory.PufferQBC, size=memsize, committee_size=7)
+    replay_exps[f"combinations/qbc-matchmaker/{run}"] = _parametrize_replay(
+        memcls=memory.PufferQBC, size=memsize, committee_size=7,
+        replay_kwargs=dict(matchmaker_predictors=7))
 
 # Analyze how well future samples are covered by the memory samples.
 # ==================================================================

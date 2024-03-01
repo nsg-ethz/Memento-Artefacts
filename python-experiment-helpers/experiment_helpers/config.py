@@ -31,10 +31,14 @@ class BaseConfig:  # pylint: disable=too-few-public-methods
     # Output directory as a root for experiment results.
     output_directory: PathType = Path('./results')
 
+    # When an experiment finishes, this file will be created with runtime info.
+    # This also indicates that the experiment can be skipped in future runs.
+    meta_filename: str = "experiment_helpers_metadata.json"
+
     # Special files when checking output directories.
     # Checkpoints present: run is not complete.
     checkpoint_files: Sequence[str] = ('*checkpoint*',)
-    # These files are ignored.
+    # These files are ignored. TODO: Deprecate.
     ignore_files: Sequence[str] = ('*.tmp',)
 
     # How many workers each experiment function may start.
@@ -75,12 +79,14 @@ class BaseConfig:  # pylint: disable=too-few-public-methods
     slurm_shell: str = "/bin/bash"
     slurm_interpreter: str = "python"
     slurm_sbatch_cmd = "sbatch --wait"
+    slurm_scancel_cmd = "scancel"
     slurm_log_dir: Optional[PathType] = None
     slurm_cpus: int = 1
     slurm_gpus: int = 0
     slurm_mem: int = 16
     slurm_constraints: str = ""
     slurm_exclude: str = ""
+    slurm_time_limit: Optional[int] = None  # in minutes
     slurm_simultaneous_jobs: Optional[int] = None
     slurm_max_array_size: Optional[int] = 1001  # Default SLURM limit.
 
@@ -110,6 +116,12 @@ class BaseConfig:  # pylint: disable=too-few-public-methods
         Finally, apply optional overrides from a dict. To avoid mistakenes,
         only attributes that are already present in the config class are
         allowed.
+
+        TODO: Overrides are limited, they cannot override anyproperties;
+        setattr only works for properties that have defined a setter.
+        Idea: make this more dynamic and allow arbitrary *updates, with the
+        restriction that classes need to come before instances. But I am not
+        fully sure how dicts would fit into this approach. Not critical atm.
         """
         # Updates.
         # --------
@@ -127,11 +139,10 @@ class BaseConfig:  # pylint: disable=too-few-public-methods
         elif isinstance(updates, cls):
             config = updates          # Already an instance, use user as-is.
         elif isinstance(updates, dict):
-            config = cls()  # Base config with dict updates (see next lines).
-            for key, value in updates.items():
-                setattr(config, key, value)
+            # Create a subclass from dict. Necessary to override properties.
+            config = type("UserConfig", (cls,), updates)()
         else:
-            # Finally, the most "magic" -- for any arbitrary object, inject `cls` as
+            # Finally, the most "magic" -- for any object, inject `cls` as
             # a baseclass, such that all missing attributes default to it.
             config = copy(updates)  # Avoid changing provided object.
             # Implementation: type() with three arugments creates a class.

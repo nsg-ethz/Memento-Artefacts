@@ -102,3 +102,16 @@ def test_wsd_normal_broadcasting():
         for j in range(2):
             assert result[i, j] == metrics.wsd_normal(mu1[i], sigma1[i],
                                                       mu2[j], sigma2[j])
+
+
+@pytest.mark.parametrize("array_1, array_2, p, expected", [
+    [[1, 2], [1.1, 2.2], 1, 0.3],
+    [[1, 1, 3], [1, 4, 7], 2, 5],
+    [[[1, 2], [4, 6]], [1, 2], 2, [0, 5]],  # broascasting
+])
+def test_minowski(array_1, array_2, p, expected):
+    """Test minowski distances."""
+    np.testing.assert_array_almost_equal(
+        metrics.minowski(array_1, array_2, p),
+        expected
+    )

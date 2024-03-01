@@ -1,6 +1,7 @@
 """Memory evaluation via data replay."""
 
 import logging
+from shutil import rmtree
 from textwrap import dedent
 from typing import Any, Dict, List, Optional
 
@@ -137,6 +138,7 @@ class PufferDataReplay(Random, replay_helper.ReplayFramework):
                  load_stalls: bool = False,
                  stall_upscale: Optional[float] = None,
                  matchmaker_predictors: Optional[int] = None,
+                 matchmaker_keep_first: bool = False,
                  **kwargs):
         self.config = PufferExperimentConfig.with_updates(config)
         self.index = index  # The model index, by default 0
@@ -163,6 +165,7 @@ class PufferDataReplay(Random, replay_helper.ReplayFramework):
 
         # Past models for MatchMaker-like predictions.
         self.matchmaker_predictors = matchmaker_predictors
+        self.matchmaker_keep_first = matchmaker_keep_first
         self.last_predictorpaths: List[str] = []
 
         # Upscale factor for JTT-like training.
@@ -192,6 +195,17 @@ class PufferDataReplay(Random, replay_helper.ReplayFramework):
         super().save_state(iteration)  # Normal checkpooint
         logging.debug("Saving run metadata.")
         eh.data.to_pickle(self.iterdays, self.metafile)
+        if isinstance(self.memory, memory.PufferQBC) and self.memory.predictor:
+            logging.debug("Saving QBC predictors.")
+            qbcdir = Path(self.checkpointfile).parent / "qbc_checkpoint"
+            if not qbcdir.exists():
+                qbcdir.mkdir(parents=True, exist_ok=True)
+            elif any(qbcdir.iterdir()):
+                logging.debug("QBC checkpoint dir not empty, overwriting.")
+                rmtree(qbcdir, ignore_errors=True)
+                qbcdir.mkdir(parents=True, exist_ok=True)
+            for idx, predictor in enumerate(self.memory.predictor):
+                self._save_predictor(predictor, qbcdir / str(idx))
 
     def load_state(self):
         """Load state and assert that metadata matches."""
@@ -208,6 +222,22 @@ class PufferDataReplay(Random, replay_helper.ReplayFramework):
             logging.debug("Input: %s", self.iterdays)
             logging.debug("Found: %s", existing_meta)
             raise RuntimeError(msg % self.metafile)
+        if isinstance(self.memory, memory.PufferQBC):
+            qbcdir = Path(self.checkpointfile).parent / "qbc_checkpoint"
+            if not qbcdir.exists():
+                logging.warning("QBC checkpoint dir not found.")
+            else:
+                self.memory.update_predictors([
+                    self._load_predictor(subpath)
+                    for subpath in qbcdir.iterdir()
+                ])
+        # Load last predictors for MatchMaker.
+        if self.matchmaker_predictors is not None:
+            self.last_predictorpaths = [
+                self.predictorpath / f"ensemble/{i}"
+                for i in range(self.matchmaker_predictors)
+                if self.predictor_exists(self.predictorpath / f"ensemble/{i}")
+            ]
 
     def remove_checkpoint(self):
         """Clean up extra metafile."""
@@ -261,11 +291,11 @@ class PufferDataReplay(Random, replay_helper.ReplayFramework):
         # Fugu only if available (not the case after 2022-10-06).
         fugupath = (self.config.get_data_directory(eval_day) /
                     self.config.model_pathname)
-        if fugupath.is_dir():
+        try:
             logging.debug("Evaluating Fugu model (`%s`).", fugupath)
             results.append(
                 self._eval(fugupath, eval_inout).add_prefix("fugu_"))
-        else:
+        except FileNotFoundError:
             logging.debug("No Fugu model available for `%s`.", eval_day)
 
         febpath = self.config.fugu_feb_dir
@@ -364,7 +394,13 @@ class PufferDataReplay(Random, replay_helper.ReplayFramework):
             loaded = [self._load_predictor(mpath)
                       for mpath in self.last_predictorpaths]
             loaded.append(self._load_predictor(self.predictorpath))
-            loaded = loaded[-self.matchmaker_predictors:]  # Max length.
+            if len(loaded) > self.matchmaker_predictors:
+                if not self.matchmaker_keep_first:
+                    loaded = loaded[-self.matchmaker_predictors:]  # Max length.
+                else:
+                    loaded = (
+                        [loaded[0]] + loaded[-(self.matchmaker_predictors - 1):]
+                    )  # Keep first, then max length.
             self.last_predictorpaths = []
             for i, model in enumerate(loaded):
                 _path = self.predictorpath / f"ensemble/{i}"

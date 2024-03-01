@@ -98,6 +98,8 @@ class Ns3DataReplay(replay_helper.ReplayFramework):
             # Merge and shuffle the datadicts together.
             input_data = self._shuffle_sample(
                 memento.utils.merge_datadicts(iter_data.values()))
+            assert memento.utils.sample_count(input_data) > 0
+            assert memento.utils.sample_count(eval_data) > 0
             yield (input_data, (eval_data, observed.copy(), observednow))
 
     def load_by_experiment(self, scenario, runs, balance=False) \

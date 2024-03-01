@@ -58,6 +58,7 @@ experiment_cli()
 import fnmatch
 import inspect
 import logging
+import re
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime as dt
@@ -70,8 +71,7 @@ import click
 from . import executor, log_utils
 from .config import BaseConfig, load_config_from_pyfile
 from .data import Path, to_json
-from .typing import (Any, Callable, Dict, Literal, Optional, Sequence, Type,
-                     Union, cast)
+from .typing import Any, Callable, Dict, Literal, Optional, Sequence, Type, Union, cast
 
 # CLI base group.
 # ===============
@@ -148,10 +148,13 @@ class ParametrizedExperiments:
         return self.get_matches(patterns if patterns else "*")
 
     def get_matches(self, patterns: Union[str, Sequence[str]] = "*"):
-        """Return all experiment keys matching patterns."""
-        return list(chain.from_iterable(
+        """Return all experiment keys matching patterns.
+
+        Remove duplicates (using dict to keep order).
+        """
+        return list(dict.fromkeys(chain.from_iterable(
             _matches(self.experiments, pattern) for pattern in patterns
-        ))
+        )))
 
     def __call__(self,
                  patterns: Union[str, Sequence[str]] = "*",
@@ -183,8 +186,7 @@ class ParametrizedExperiments:
         config = self.configcls.with_updates(config)
         outdir = Path(config.output_directory) / self.name
         outdir.mkdir(exist_ok=True, parents=True)
-        with log_utils.server_logging(self.name, patterns, config) \
-                as runlogger:
+        with log_utils.server_logging(self.name, config) as runlogger:
             # Match experiments and check output.
             runlogger.info("Experiment group: `%s`", self.name)
             runlogger.debug("Matching experiments.")
@@ -215,7 +217,8 @@ class ParametrizedExperiments:
                 ```
                 %s
                 ```
-                """).strip(), len(skipped), "\n".join(skipped))
+                """).strip(),
+                    len(skipped), "\n".join(_summarize_experiments(skipped)))
 
             if running:
                 runlogger.info(dedent("""
@@ -223,7 +226,8 @@ class ParametrizedExperiments:
                 ```
                 %s
                 ```
-                """).strip(), len(running), "\n".join(running))
+                """).strip(),
+                    len(running), "\n".join(_summarize_experiments(running)))
             else:
                 runlogger.info("Nothing to do.")
                 return
@@ -241,8 +245,8 @@ class ParametrizedExperiments:
 
             # Run jobs.
             start = dt.utcnow()
-            job_results = executor.map(_run, jobargs,
-                                       config=config, logger=runlogger)
+            job_results = executor.map_experiments(
+                _run, jobargs, config=config, logger=runlogger)
             results = list(zip(running, job_results))
             duration = dt.utcnow() - start
 
@@ -269,7 +273,8 @@ class ParametrizedExperiments:
                 ```
                 %s
                 ```
-                """).strip(), len(failures), "\n".join(failures))
+                """).strip(),
+                    len(failures), "\n".join(_summarize_experiments(failures)))
 
 
 # Helper functions.
@@ -309,7 +314,7 @@ def add_to_cli(parametrized: ParametrizedExperiments,
         if list_exps:
             exps = parametrized.available_experiments(patterns)
             click.echo(f"{len(exps)} available experiments:")
-            for exp in exps:
+            for exp in _summarize_experiments(exps):
                 click.echo(exp)
             return
 
@@ -319,11 +324,13 @@ def add_to_cli(parametrized: ParametrizedExperiments,
         )
         if workers is not None:
             overrides['workers'] = workers
+            overrides['slurm_cpus'] = workers
         if n_jobs is not None:
             overrides['multiprocessing_jobs'] = n_jobs
             overrides['slurm_simultaneous_jobs'] = n_jobs
         if slurm is not None:
             overrides['slurm'] = slurm
+
         userconfig = parametrized.configcls.with_updates(config, overrides)
 
         if not patterns:
@@ -373,12 +380,53 @@ def _run(args):
                 "seconds": duration.total_seconds(),
                 # TODO: We could add a hash of the config here or sth to detect
                 #       changes to the config that may invalidate the results?
-            }, outdir / "experiment_helpers_metadata.json")
+            }, outdir / config.meta_filename)
             logging.info("Completed in %s.", duration)
             return True
         except:  # pylint: disable=bare-except
             logging.exception("Error!")
             return False
+
+
+def _summarize_experiments(experiments):
+    """Abbriviate experiments by summarizing numbers at the end.
+
+    TODO: consider supporting date ranges as well.
+    """
+    # Sort experiments by name to make sure we match as many as possible.
+    experiments = sorted(experiments)
+
+    current_prefix = None
+    first_suffix = None
+    last_suffix = None
+    last_number = float('nan')
+
+    def emit():
+        if first_suffix == last_suffix:
+            return f"{current_prefix}{first_suffix}"
+        else:
+            return f"{current_prefix}[{first_suffix}-{last_suffix}]"
+
+    results = []
+    for experiment in experiments:
+        prefix, suffix, number = _split_experiment_name(experiment)
+        if (prefix != current_prefix) or (number != last_number + 1):
+            if current_prefix is not None:
+                results.append(emit())
+            current_prefix = prefix
+            first_suffix = suffix
+        last_suffix = suffix
+        last_number = number
+    results.append(emit())
+    return results
+
+
+def _split_experiment_name(name):
+    match = re.search(r'\d+$', name)
+    if match is None:
+        return name, "", float('nan')
+    else:
+        return name[:match.start()], match.group(0), int(match.group(0))
 
 
 @contextmanager
@@ -424,25 +472,29 @@ def assert_all_leaves(experiments):
 
 
 def _is_completed(path: Path, config: BaseConfig):
-    """Return True if the path contains any (non-ignored) files."""
-    if not path.is_dir():
-        return False
+    """Return True if the path contains a meta file."""
+    meta_file = path / config.meta_filename
+    return meta_file.is_file()
 
-    for item in path.iterdir():
-        is_ignored = any(fnmatch.fnmatch(item.name, pattern)
-                         for pattern in config.ignore_files)
-        is_checkpoint = any(fnmatch.fnmatch(item.name, pattern)
-                            for pattern in config.checkpoint_files)
-        if item.is_file():
-            if is_checkpoint:
-                return False  # checkpoints - > not completed
-            if not is_ignored:
-                return True  # a non-ignored file -> completed
-        elif item.is_dir() and not is_ignored:
-            # If it's a non-ignored dict, check recursively.
-            if _is_completed(item, config=config):
-                return True
-    return False
+    # TODO: deprecated, consider removing. Was the old approach to check.
+    # if not path.is_dir():
+    #     return False
+
+    # for item in path.iterdir():
+    #     is_ignored = any(fnmatch.fnmatch(item.name, pattern)
+    #                      for pattern in config.ignore_files)
+    #     is_checkpoint = any(fnmatch.fnmatch(item.name, pattern)
+    #                         for pattern in config.checkpoint_files)
+    #     if item.is_file():
+    #         if is_checkpoint:
+    #             return False  # checkpoints - > not completed
+    #         if not is_ignored:
+    #             return True  # a non-ignored file -> completed
+    #     elif item.is_dir() and not is_ignored:
+    #         # If it's a non-ignored dict, check recursively.
+    #         if _is_completed(item, config=config):
+    #             return True
+    # return False
 
 
 def _remove_files(path: Path):
@@ -461,18 +513,24 @@ def _remove_files(path: Path):
 
 def _config_callback(ctx, param, value):
     """Load config file."""
+    default_config = Path("./config.py")
     default_classname = 'Config'
-    if value is None:  # No config file provided, try default.
-        default_config = Path("./config.py")
-        if default_config.exists():  # Default exists, use it.
+    if value is None:  # No value provided, use default config if exsits.
+        if default_config.exists():
             filename, key = default_config, default_classname
-        else:  # Skip if no value provided and default does not exist.
-            return None
+        else:
+            return None  # skip.
     elif ':' in value:  # Both filename and classname provided.
         filename, key = value.split(':')
-    else:  # Only filename provided, use default classname.
+    elif Path(value).exists():
+        # We have a value, and its a path to a config, use it as such.
         filename, key = value, default_classname
-
+    elif default_config.exists():
+        # We have a value and the default config exsits, use it as classname.
+        filename, key = default_config, value
+    else:
+        raise ValueError(f"Wrong config: Could neither find a file `{value}` "
+                         f"nor `{default_config}` containing `{value}`.")
     click.echo(f"Loading `{key}` from `{filename}`.")
     return load_config_from_pyfile(filename, key=key)
 

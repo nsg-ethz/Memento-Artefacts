@@ -9,6 +9,7 @@ from experiment_helpers.data import Path
 
 from ..config import PufferExperimentConfig
 from . import models
+from .data import load_inout
 
 
 def analyse_selection(*, start, end, n_samples, memorycls,
@@ -41,11 +42,11 @@ def analyse_selection(*, start, end, n_samples, memorycls,
         batch_mem.update_predictor(config.fugu_feb_dir)
 
     logging.info("Collect data.")
-    _valid_files = _get_input_files(start, end, model_index, config)
+    _valid_days = _get_valid_days(start, end, model_index, config)
     _x, _y = None, None
-    for i, inout_path in enumerate(_valid_files, 1):
-        logging.debug("Loading %i/%i", i, len(_valid_files))
-        inout = eh.data.read_pickle(inout_path)
+    for i, day in enumerate(_valid_days, 1):
+        logging.debug("Loading %i/%i", i, len(_valid_days))
+        inout = load_inout(day, model_index, config=config)
         if _x is None:
             _x = inout['in']
             _y = inout['out']
@@ -131,12 +132,12 @@ def selected(datadict, selection):
     return np.isin(bytes_all, bytes_selection)
 
 
-def _get_input_files(start, end, index, config):
+def _get_valid_days(start, end, index, config):
     start = pd.to_datetime(start)
     end = pd.to_datetime(end)
     logging.debug("Checking data between `%s` and `%s`,",
                   config.daystr(start), config.daystr(end))
-    valid_files = []
+    valid_days = []
     invalid = []
     all_days = pd.date_range(start, end, freq='D')
     for day in all_days:
@@ -146,10 +147,10 @@ def _get_input_files(start, end, index, config):
         if not inout_file.is_file():
             invalid.append(f"{daystr}: missing inout.")
         else:  # All data is ok, and we should return path to inout.
-            valid_files.append(inout_file)
+            valid_days.append(day)
 
     if invalid:
         logging.warning("Missing data for `%i` day(s).", len(invalid))
         logging.debug("\n".join(invalid))
 
-    return valid_files
+    return valid_days

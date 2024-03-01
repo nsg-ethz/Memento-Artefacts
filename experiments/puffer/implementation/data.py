@@ -331,7 +331,7 @@ def load_inout(day, index=None, config=None) -> Union[InOut, InOutDict]:
     frame_file = daydir / config.video_filename
 
     if index is None:
-        inout_exists = any([file.is_file() for file in inout_files])
+        inout_exists = all([file.is_file() for file in inout_files])
     else:
         inout_exists = inout_files[index].is_file()
 

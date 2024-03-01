@@ -41,6 +41,13 @@ def distance2(batches, others=None):
     ])
 
 
+def mock_distance(batches, others=None):
+    """Returns a random matrix."""
+    n_rows = len(batches)
+    n_cols = len(batches) if others is None else len(others)
+    return np.random.rand(n_rows, n_cols)
+
+
 @pytest.fixture()
 def testmemory():
     """Test memory class fixture."""
@@ -127,6 +134,21 @@ def test_insert_chunked(testmemory, mocker):
         assert len(call.args) == 1
         assert set(call.args[0].keys()) == {'x'}
         np.testing.assert_array_equal(call.args[0]['x'], array)
+
+
+
+def test_distance_samples(testmemory):
+    """Test that we can compute the distance using a subset of batches.
+    
+    Only test that it doesn't crash.
+    """
+    mem = testmemory(
+        distances=[mock_distance],
+        distance_sample_fraction=0.01,
+        size=32,
+    )
+    mem.insert(x=np.arange(100))
+
 
 
 # Multi memory tests.
@@ -348,3 +370,14 @@ def test_add_data_sort_2d_max(testmemory, attr):
     batches = mem.batch({attr: reverse})
     for batch, row in zip(batches, expected):
         np.testing.assert_array_equal(batch[attr].squeeze(), row)
+
+
+# Tests for subsampling (and sparse arrays to make it feasible).
+# =============================================================
+
+def test_memento_sample_fraction(testmemory):
+    """Simply test that Memento doesn't crash when using sparse arrays."""
+    mem = testmemory(size=100,
+                     distances=[mock_distance],
+                     distance_sample_fraction=0.5)
+    mem.insert(x=np.arange(1000))

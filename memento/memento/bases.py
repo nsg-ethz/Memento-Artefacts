@@ -194,7 +194,7 @@ class MemoryBase(abc.ABC):
         distinguish between old (in-memory) batches and new batches.
 
         If there is no distinctions, feel free to use merge both, e.g. via
-        `batches = self.batches + new_batches`.
+        `merged = utils.merge_datadicts([current_data, new_data])`.
         """
 
     # Predictor methods.

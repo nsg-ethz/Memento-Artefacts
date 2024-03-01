@@ -51,7 +51,7 @@ def assert_config_content(config, expected_attribute):
 
 
 @pytest.mark.parametrize("userconfig", [
-    dict(attribute=42),    # as dict.
+    dict(attribute=42),         # as dict.
     _UserConfig,                # as class.
     _UserConfig(),              # as object.
     _UserSubConfig,             # Also works whether the config is already
@@ -62,6 +62,46 @@ def test_with_updates(userconfig):
     # Test explicit loading.
     config = _BaseConfig.with_updates(userconfig)
     assert assert_config_content(config, 42)
+
+
+def test_with_overrides():
+    """Test all ways the user can provide config updates."""
+    # Test explicit loading.
+    config = _BaseConfig.with_updates(None, dict(attribute=42))
+    assert assert_config_content(config, 42)
+
+
+class _NewDynamic:
+    @property
+    def dynamic_attribute(self):
+        """Redefine the dynamic attribute."""
+        return 40 + 2
+
+
+class _MakeStatic:
+    dynamic_attribute = 42
+
+
+@pytest.mark.parametrize("userconfig", [
+    dict(dynamic_attribute=42),         # as dict.
+    _NewDynamic, _NewDynamic(),
+    _MakeStatic, _MakeStatic(),
+])
+def test_with_updates_dynamic_attribute(userconfig):
+    """Test that dynamic attributes can be updated, too."""
+    config = _BaseConfig.with_updates(userconfig)
+    assert config.dynamic_attribute == 42
+
+
+@pytest.mark.skip(reason="Not implemented yet.")
+def test_property_override():
+    """Test all ways the user can provide config updates.
+
+    Currently fails, fixing this is not easy. See comment in config.py.
+    """
+    # Test explicit loading.
+    config = _BaseConfig.with_updates(None, dict(dynamic_attribute=42))
+    assert config.dynamic_attribute == 42
 
 
 @pytest.mark.parametrize("userconfig", [

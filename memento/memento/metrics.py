@@ -137,3 +137,20 @@ def wsd_normal(mu_1: ArrayLike, sigma_1: ArrayLike,
         return distances.item()
     except ValueError:
         return distances.squeeze()
+
+
+def minowski(array_1, array_2, p: float = 2.0):
+    """Compute the minowski distance between array_1 and array2.
+    
+    Works with broadcasting to compute pairwise distances between each row
+    in array_1 with each row in array_2.
+    """
+    array_1 = np.atleast_3d(array_1)
+    array_2 = np.atleast_3d(array_2).T
+    diff = np.abs(array_1 - array_2)**p
+    distances = diff.sum(axis=1)**(1/p)
+    try:
+        return distances.item()
+    except ValueError:
+        return distances.squeeze()
+    

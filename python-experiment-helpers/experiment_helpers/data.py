@@ -30,11 +30,12 @@ import pickle
 import uuid
 import warnings
 from contextlib import ExitStack, contextmanager
-from functools import partial, wraps
+from functools import wraps
 from tempfile import NamedTemporaryFile
 from typing import Dict, List, Union, Any
 
 import fsspec
+import fsspec.asyn
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
@@ -43,8 +44,15 @@ from upath import UPath as Path
 PathType = Union[os.PathLike, str]
 JsonType = Union[None, int, str, bool, List[Any], Dict[str, Any]]
 
-# Make inferring compression the default.
-open = partial(fsspec.open, compression="infer")
+
+# Make async fsspec filesystems work with fork. Concrete example: gcsfs.
+# https://github.com/fsspec/gcsfs/issues/379
+os.register_at_fork(after_in_child=fsspec.asyn.reset_lock)
+
+
+def open(urlpath, mode: str = 'r', compression: str = "infer", **kwargs):
+    """Open a file using fsspec and infer compression from extension."""
+    return fsspec.open(urlpath, mode=mode, compression=compression, **kwargs)
 
 
 # Main usecase is to use univeral-pathlib with sshfs, which is not yet
@@ -82,6 +90,7 @@ def to_npz(data: Dict[str, ArrayLike], path: PathType, open_kwargs={}):
 
     Does not support arbitrary compression specified by user or extension.
     """
+    open_kwargs = open_kwargs.copy()
     open_kwargs.setdefault('compression', None)
     assert open_kwargs['compression'] is None, \
         "npz must write to uncompressed files."
@@ -92,11 +101,25 @@ def to_npz(data: Dict[str, ArrayLike], path: PathType, open_kwargs={}):
 def read_npz(path: Union[str, os.PathLike], open_kwargs={}, **kwargs) \
         -> Dict[str, ArrayLike]:
     """Load .npz files and return dict."""
+    open_kwargs = open_kwargs.copy()
     open_kwargs.setdefault('compression', None)
     assert open_kwargs['compression'] is None, \
         "npz must read from uncompressed files."
     with open(path, 'rb', **open_kwargs) as file:
         return dict(np.load(file, **kwargs))
+
+
+def to_np(data: ArrayLike, path: PathType, open_kwargs={}, **kwargs):
+    """Save numpy arrays."""
+    with write_tmp(path, 'wb', **open_kwargs) as file:
+        np.save(file, data, **kwargs)
+
+
+def read_np(path: Union[str, os.PathLike], open_kwargs={}, **kwargs) \
+        -> ArrayLike:
+    """Load .npz files and return dict."""
+    with open(path, 'rb', **open_kwargs) as file:
+        return np.load(file, **kwargs)
 
 
 def to_csv(data: pd.DataFrame, path: PathType, open_kwargs={},
@@ -131,7 +154,6 @@ def write_tmp(path: PathType, *args, **kwargs):
         if not tmppath.exists():
             break
     try:
-        # breakpoint()
         with open(tmppath, *args, **kwargs) as file:
             yield file
         # Rename to final name after file is closed.

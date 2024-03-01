@@ -71,6 +71,8 @@ class PufferExperimentConfig(ExperimentConfig):
             "memento-deterministic":
             self.memento_model_basepath / "deterministic",
         }
+    
+    memento_model_directory_replacements = {}
 
     chunk_playtime = 2.001  # seconds.
     # Each chunk is 2.001s playtime, Puffer wants >= 4s, i.e. at least 2 chunks.

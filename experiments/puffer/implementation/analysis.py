@@ -20,7 +20,7 @@ idx = pd.IndexSlice
 
 
 # `*` syntax means that all arguments are keyword arguments.
-def analyze_day(*, day, config=None):
+def analyze_day(*, day, index=None, config=None):
     """Evaluate video data by abr for a given day and model."""
     config = PufferExperimentConfig.with_updates(config)
     day = pd.to_datetime(day)
@@ -31,7 +31,7 @@ def analyze_day(*, day, config=None):
     try:
         logging.debug("Loading video data data from `%s`.", videodatapath)
         frame = pd.read_csv(videodatapath)
-        inout = load_inout(day, config=config)
+        inout = load_inout(day, index=index, config=config)
 
         logging.debug("Filtering ABRS.")
         frame, inout = _filter_abrs(frame, inout, config)
@@ -226,10 +226,10 @@ def _stallstats(frame: pd.DataFrame, config: PufferExperimentConfig):
 def _add_scores(frame: pd.DataFrame, inout: Optional[InOut],
                 config: PufferExperimentConfig):
     """Return a new frame with added prediction scores."""
-    day = pd.to_datetime(frame['sent time (ns GMT)'].min(), unit='ns')
+    day = pd.to_datetime(frame[time_col(frame)].min(), unit='ns')
     scores = []
 
-    logging.debug("Scores for Fugu.")
+    logging.debug("Scores for Fugu (if available).")
     try:
         # Note: The fugu model published on day X is used for data on day X.
         fugu_inout = _filter_inout(frame, inout, "fugu")
@@ -244,19 +244,18 @@ def _add_scores(frame: pd.DataFrame, inout: Optional[InOut],
     scores.append(_get_scores(fugufeb_inout, config.fugu_feb_dir,
                               workers=config.workers))
 
-    logging.debug("Scores for Memento-trained models.")
+    logging.debug("Scores for Memento-trained models (if available).")
     for abr in frame['abr'].unique():
         _dir = config.memento_model_directories.get(abr)
         if not _dir:
             continue  # This is only for ABRs trained by us.
-
-        _inout = _filter_inout(frame, inout, abr)
-        try:
-            _models = _get_memento_models(_dir, day, config)
-        except FileNotFoundError:
+        _models = _get_memento_models(_dir, day, config)
+        if not _models or not all(_m.exists() for _m in _models):
             logging.warning("No model data for `%s` found in `%s`!",
                             abr, _dir)
             continue
+
+        _inout = _filter_inout(frame, inout, abr)
         scores.append(_get_scores(_inout, _models, workers=config.workers))
 
     return frame.join(pd.concat(scores), on=scores[0].index.names)
@@ -300,14 +299,28 @@ def _get_memento_models(basedir, day, config: PufferExperimentConfig):
     We cannot guarantee that this model was used, as we have no feedback on
     when it is actually pulled -- so there may be a mismatch of about one day.
     """
-    return [_get_last_model(index, basedir, day, config) for index in range(5)]
+    try:
+        return [_get_last_model(index, basedir, day, config)
+                for index in range(5)]
+    except FileNotFoundError:
+        return []
 
 
 def _get_last_model(index, basedir, day, config: PufferExperimentConfig):
     """Get model for a single day and index."""
     daystr = config.daystr(day)
     statsfile = Path(basedir) / f"{index}/{daystr}/stats_{index}.json.gz"
-    modeldir = eh.data.read_json(statsfile)['model_dir']
+    if statsfile.exists():
+        modeldir = str(eh.data.read_json(statsfile)['model_dir'])
+    else:
+        # Try old format.
+        statsfile = Path(basedir) / f"{index}/{daystr}/stats_{index}.pickle.gz"
+        modeldir = str(eh.data.read_pickle(statsfile)['model_dir'])
+
+    # If configured, update path (e.g. to map old paths to new locations).
+    for old, new in config.memento_model_directory_replacements.items():
+        modeldir = modeldir.replace(old, new)
+
     return Path(modeldir) / f"py-{index}.pt"
 
 
@@ -386,7 +399,7 @@ def delta_ssim_db(frame):
     with pd.option_context('mode.use_inf_as_na', True):
         deltas = (
             frame
-            .sort_values(by=["sent time (ns GMT)"], ascending=True)
+            .sort_values(by=[time_col(frame)], ascending=True)
             .groupby("session", observed=True)
             [["ssim_index"]]
             .apply(lambda df: (
@@ -400,3 +413,12 @@ def delta_ssim_db(frame):
             .rename(columns={"ssim_index": "delta_ssim"})
         )
     return frame.assign(delta_ssim=deltas)
+
+
+def time_col(frame):
+    """Get the name of the time col, ensuring backwards compatibility."""
+    if "sent time (ns GMT)" in frame.columns:
+        return "sent time (ns GMT)"
+    if "time (ns GMT)" in frame.columns:
+        return "time (ns GMT)"
+    raise ValueError("No time column found.")

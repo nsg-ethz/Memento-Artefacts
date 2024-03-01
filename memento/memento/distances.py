@@ -11,11 +11,12 @@ from functools import partial
 from typing import Generic, Iterable, Optional, Sequence, Tuple, TypeVar, Union
 
 import KDEpy
+from memento.utils import ArrayLike
 import numpy as np
 from scipy import integrate
 
 from . import metrics, utils
-from .utils import ArrayLike, StrictDataDict
+from .utils import StrictDataDict
 
 logger = logging.getLogger("memory.distances")
 
@@ -396,6 +397,36 @@ class JSDContinuousDistribution(_JSDContinousBase):
         For more details, see JSDCategoricalDistribution.
         """
         return np.mean(values, axis=0)
+
+
+# Alternative: Distance between raw vectors.
+# ==========================================
+
+class Minowski(DistributionDistance):
+    """Minowski distances between batches.
+    
+    If the batch contains more than one row, we average over rows.
+
+    We use distributiondistance as base for simplicity, but return the mean
+    vector as "distribution".
+    """
+    def __init__(self, *args, p: float=2.0, **kwargs):
+        self.p = float(p)
+        super().__init__(*args, **kwargs)
+
+    def compute_distribution(self, values: np.ndarray) -> np.ndarray:
+        """Compute mean over rows, if more than one."""
+        match len(values.shape):
+            case 1:
+                return values
+            case 2:
+                return values.mean(axis=0)
+            case _:
+                raise ValueError("Data must be 1- or 2-D, but got shape"
+                                 f" `{values.shape}`")
+
+    def distribution_distance(self, dist, other_dists) -> ArrayLike:
+        return metrics.minowski(dist, other_dists, self.p)
 
 
 # Helpers for multiprocessing with shared arrays.

@@ -17,20 +17,14 @@ and can run them in parallel, taking care of all stuff around it, mainly:
   IDEs and can be updated at runtime.
 - Logging is set up automatically and includes optional file and slack logging.
 
-> **Pickle helper**
->
-> Currently, `experiment_helpers.data.pickle` relies on yet unreleased features
-> of [univeral_pathlib](https://github.com/fsspec/universal_pathlib/issues/116).
-> Until they are released, you need to install the latest version from github
-> to use it:
-> `pip install git+https://github.com/fsspec/universal_pathlib.git#egg=universal_pathlib`
 
-> **SSHFS**
->
-> If you want to use SSHFS with `experiment_helpers.data.Path`, e.g. like this:
-> `Path('ssh://fischer/home/alex/')`, you need to install my fork of `sshfs`,
-> which registers the SSHFileSystem with fsspec:
-> `pip install git+https://github.com/NotSpecial/sshfs.git#egg=sshfs`
+**Open Issues**
+
+- [ ] Document the CLI a bit better, in particular config and slurm flags.
+- [ ] Remove checking for any existing files; we have the metafile now.
+      As a consequence, we can also remove config for tmp files.
+- [ ] `-l` and `-d` are redundant, we could settle for one of the two.
+- [ ] Make universal `write` and `read` methods that infer from file ending.
 
 
 ## Installation
@@ -81,8 +75,8 @@ Then you can use the CLI to run experiments:
 python run.py --help             # show groups of experiments
 python run.py main --help        # show all experiments within `main`
 python run.py main experiment_1  # specific matching
-python run.py main *_1           # wildcard matching
-python run.py main *_1 *_2       # multiple patterns
+python run.py main "*_1"         # wildcard matching
+python run.py main "*_1" "*_2"   # multiple patterns
 python run.py main --jobs=2      # run 2 experiments in parallel
 python run.py main --slurm       # run the experiments on SLURM
 ```
@@ -161,8 +155,8 @@ see all available options, or match only specific experiments:
 python run.py --help
 python run.py main --help
 python run.py main experiment_1  # specific matching
-python run.py main *_42          # wildcard matching
-python run.py main *_42 *_1      # multiple patterns
+python run.py main "*_42"        # wildcard matching
+python run.py main "*_42" "*_1"  # multiple patterns
 python run.py main --jobs=2      # run 2 experiments in parallel
 python run.py main --slurm       # run experiments on SLURM
 ```

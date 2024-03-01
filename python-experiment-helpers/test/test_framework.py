@@ -140,17 +140,22 @@ def test_sub_pattern(parametrized, tmp_path, pattern):
 
 
 def test_parametrize_skip(parametrized, tmp_path):
-    """Test that tests with existing output dirs with files are skipped."""
-    _write(tmp_path / 'experiments/leaf/results.txt', 123)
-    # Create empty dir, should not be skipped.
-    (tmp_path / 'experiment/dir/subsubdir').mkdir(parents=True)
+    """Test that tests with existing meta file are skipped."""
+    # Meta file exists, will be skipped.
+    metaname = TestConfig().meta_filename
+    _write(tmp_path / f'experiments/leaf/{metaname}', 123)
+    # No meta file, won't be skipped!
+    _write(tmp_path / 'experiments/dir/leaf/results.txt', 123)
 
     parametrized(config=dict(output_directory=str(tmp_path)))
+
     # Unchanged, i.e. function did not run.
-    _assert_content(tmp_path / 'experiments/leaf/results.txt', 123)
+    _assert_content(tmp_path / f'experiments/leaf/{metaname}', 123)
+    # Changed, i.e. function ran.
     _assert_content(tmp_path / 'experiments/dir/leaf/filename', 21)
 
 
+@pytest.mark.skip("TODO: deprecate, we only check for meta file now.")
 def test_parametrize_dont_skip_checkpoints(parametrized, tmp_path):
     """Test that dirs containing checkpoints are not skipped."""
     # Results.
@@ -168,6 +173,7 @@ def test_parametrize_dont_skip_checkpoints(parametrized, tmp_path):
     _assert_content(tmp_path / 'experiments/leaf/checkpoint', "anything")
 
 
+@pytest.mark.skip("TODO: deprecate, we only check for meta file now.")
 def test_ignore_files(parametrized, tmp_path):
     """Test that dirs with ignored files are skipped."""
     # Results and something to ignore
@@ -182,6 +188,7 @@ def test_ignore_files(parametrized, tmp_path):
     _assert_content(tmp_path / 'experiments/leaf/results.txt', 123)
 
 
+@pytest.mark.skip("TODO: deprecate, we only check for meta file now.")
 def test_only_ignored_files(parametrized, tmp_path):
     """Test that dirs containing only ignored files are skipped."""
     _write(tmp_path / 'experiments/leaf/checkpoint', "anything")
@@ -196,7 +203,8 @@ def test_only_ignored_files(parametrized, tmp_path):
 
 def test_parametrize_force(parametrized, tmp_path):
     """Test forcing not to skip (clears files)."""
-    _write(tmp_path / 'experiments/leaf/results.txt', 123)
+    metaname = TestConfig().meta_filename
+    _write(tmp_path / f'experiments/leaf/{metaname}', 123)
     _write(tmp_path / 'experiments/leaf/checkpoint', "anything")
     # Also create a checkpoint for `dir/leaf`
     _write(tmp_path / 'experiments/dir/leaf/checkpoint', "anything")
@@ -214,6 +222,7 @@ def test_parametrize_force(parametrized, tmp_path):
     assert Path(tmp_path / 'experiments/dir/leaf/checkpoint').exists()
 
 
+@pytest.mark.skip("TODO: We create a metafile now, so directory stays.")
 def test_cleanup(parametrized, tmp_path):
     """Test that directories are removed if there was no output."""
     # Existing directories will _not_ be removed.

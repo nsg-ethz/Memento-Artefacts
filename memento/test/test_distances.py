@@ -190,3 +190,19 @@ def test_interval_distribution_mixture():
     np.testing.assert_allclose(
         model.compute_distribution([[1, 0, 0], [1, 0, 0], [0, 0, 1]]),
         [2/3, 0, 1/3])
+
+
+def test_minowski():
+    """Test the minowski distance class."""
+    model = distances.Minowski('x', p=2)
+    batches = [
+        {'x': [[1, 2, 3]]},  # one row, take as-is
+        {'x': [  # Two rows, take average ([1, 5, 7])
+            [1, 4, 6],
+            [1, 6, 8],  
+        ]}
+    ]
+    np.testing.assert_allclose(
+        model(batches),
+        [[0, 5], [5, 0]]
+    )

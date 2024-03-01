@@ -31,10 +31,8 @@ import cloudpickle
 from .config import BaseConfig
 from .data import Path
 
-system_map = map  # pylint: disable=invalid-name
 
-
-def map(func, iterable, *, config=None, logger=None):
+def map_experiments(func, iterable, *, config=None, logger=None):
     """Generic map function.
 
     Depending on config, either runs locally or using SLURM.
@@ -60,7 +58,7 @@ def map_local(func, iterable, config: BaseConfig, logger: logging.Logger):
     if max_jobs == 1:
         logger.debug(
             "Starting `%i` job(s) (sequential).", len(args))
-        return system_map(func, iterable)
+        return map(func, iterable)
     else:
         logger.debug("Starting `%i` job(s) (`%i` in parallel).",
                      len(args), max_jobs)
@@ -95,8 +93,11 @@ def _map_slurm(jobs, config: BaseConfig, logger: logging.Logger):
         "Starting `%i` job(s) (using SLURM).", len(jobs))
     slurm_dir = Path(config.output_directory).absolute() / \
         f".slurm.{uuid.uuid4().hex}/"
+    script_path = slurm_dir / "script.py"
+    out_path = slurm_dir / "output.txt"   # Capture SLURM stdout and stderr.
     data_path = slurm_dir / "data.pickle"
     return_path = slurm_dir / "return.pickle"
+    executor_cwd = Path.cwd().absolute()
 
     if config.slurm_log_dir is not None:
         logdir = Path(config.slurm_log_dir).absolute()
@@ -111,11 +112,16 @@ def _map_slurm(jobs, config: BaseConfig, logger: logging.Logger):
     else:
         job_limit = ""
 
-    # Create the SLURM script that runs the functions. Uses batching.
+    if config.slurm_time_limit is not None:
+        time_limit = f"#SBATCH --time={config.slurm_time_limit}"
+    else:
+        time_limit = ""
+
+    # Create the SLURM script that calls the python script (see below).
     # Annotate the job with the command line arguments the CLI was started with
     # so we can identify the job, e.g. when using squeue.
     cmdline = shlex.join(sys.argv[1:])
-    script = dedent(f"""\
+    slurm_input = dedent(f"""\
         #!{config.slurm_shell}
 
         # SLURM options.
@@ -128,10 +134,22 @@ def _map_slurm(jobs, config: BaseConfig, logger: logging.Logger):
         #SBATCH --output={logout}
         #SBATCH --error={logerr}
         #SBATCH --exclude="{config.slurm_exclude}"
+        {time_limit}
 
-        {config.slurm_interpreter} - <<EOS
+        {config.slurm_interpreter} {script_path}
+    """)
+    logger.debug("---SLURM input---\n%s\n---input end---",
+                 slurm_input.strip())
+
+    # Define the python script that will be run by slurm.
+    python_script = dedent(f"""\
         import os
         import pickle
+        import sys
+
+        # Start from same cwd as executor (for imports etc.)
+        os.chdir("{executor_cwd}")
+        sys.path.insert(0, "{executor_cwd}")
 
         # Get index fo current batch job.
         index = int(os.environ['SLURM_ARRAY_TASK_ID'])
@@ -140,19 +158,22 @@ def _map_slurm(jobs, config: BaseConfig, logger: logging.Logger):
         with open(f'{data_path}.{{index}}', 'rb') as file:
             function, args = pickle.load(file)
 
-        # Execute.
-        result = function(args)
+        if __name__ == '__main__':
+            # Execute.
+            result = function(args)
 
-        # Store return value.
-        with open(f'{return_path}.{{index}}', 'wb') as file:
-            pickle.dump(result, file)
-        EOS
+            # Store return value.
+            with open(f'{return_path}.{{index}}', 'wb') as file:
+                pickle.dump(result, file)
     """)
-    logger.debug("---SLURM script---\n%s\n---script end---", script.strip())
+    logger.debug("---SLURM script---\n%s\n---script end---",
+                 python_script.strip())
 
     try:
-        # Make dirs and write data.
+        # Make dirs and write script and data.
         slurm_dir.mkdir(parents=True, exist_ok=True)
+        with open(script_path, "w") as file:
+            file.write(python_script)
         for index, data in enumerate(jobs):
             with open(f"{data_path}.{index}", "wb") as file:
                 file.write(data)
@@ -160,10 +181,30 @@ def _map_slurm(jobs, config: BaseConfig, logger: logging.Logger):
         # Run with SLURM.
         # We don't check output as a whole; we want to know for each job
         # individually whether it failed or not by checking the output files.
-        subprocess.run(
-            config.slurm_sbatch_cmd,
-            shell=True, input=script, text=True, check=False,
-        )
+        with open(out_path, "w+") as output_file:
+            try:
+                subprocess.run(
+                    config.slurm_sbatch_cmd,
+                    shell=True, input=slurm_input, text=True,
+                    check=False, stdout=output_file, stderr=output_file,
+                )
+            except KeyboardInterrupt:
+                output_file.seek(0)
+                for line in output_file.read().splitlines():
+                    if line.startswith("Submitted batch job "):
+                        job_id = line.split()[-1]
+                        break
+                else:
+                    # Interrupt before job was submitted.
+                    job_id = None
+                if job_id is not None:
+                    logger.critical(
+                        "KeyboardInterrupt received, "
+                        f"cancelling SLURM job {job_id}. Please wait!")
+                    subprocess.run(
+                        f"{config.slurm_scancel_cmd} {job_id}",
+                        shell=True, check=False,
+                    )
 
         # Load return values.
         return_values = []
@@ -180,7 +221,7 @@ def _map_slurm(jobs, config: BaseConfig, logger: logging.Logger):
             # If the function fails, we can report the errors already.
             # If it is cancelled by SLURM, we point the user to the logs.
             logger.error(
-                "Some SLURM job(s) failed or were cancelled by SLURM. "
+                "Some SLURM job(s) failed or were cancelled. "
                 "Enable and check the SLURM logs for more information."
             )
     finally:

@@ -8,9 +8,9 @@ research as well.
 
 import logging
 from collections import defaultdict
+from memento.utils import ArrayLike
 
 import numpy as np
-from numpy.typing import ArrayLike
 from scipy.special import softmax
 
 from . import bases, utils
@@ -266,6 +266,110 @@ class LossAwareBalancedReservoir(utils.Random, bases.MemoryBase):
             scores_raw = (scores_raw - _min) / (_max - _min)
 
         return scores_raw / scores_raw.sum()
+
+
+class QueryByCommitteeMemory(utils.Random, bases.MemoryBase):
+    """A QBC memory that selects samples based on comittee.
+
+    Samples are selected based on the disagreement between the models in the
+    committee, where the disagreement is measured by the entropy of the
+    predicted class probabilities, averaged over all models in the committee.
+    If either all models predict different classes, or all models predict
+    all classes with equal probability, the entropy is maximized.
+
+    Works only with classification output by default, for other outputs, you
+    must implement an appropriate `entropy` method.
+
+    Everytime update_predictor is called, the predictor is added to the
+    committee; up to a maximum of `committee_size` predictors. If
+    `committee_size` is not None, we keep the `committee_size` most recent
+    predictors. Alternatively, use `update_predictors` to set the committee
+    directly, removing all previous predictors.
+
+    Optionally, the memory can be set to keep the first predictor in the
+    committe forever. This can help if the data is very diverse. Insert a
+    random "baseline" predictor to the committee, and set `keep_first` to True.
+    In the following, only the other committee members will be updated.
+    As the committee members tend to specialize, we can suffer from catastrophic
+    forgetting. Keeping a baseline predictor can help to avoid this.
+    """
+    def __init__(self, *args,
+                 committee_size=None,
+                 keep_first=False,
+                 tolerance: float = 1e-6,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.predictor_members = committee_size
+        self.predictor = None
+        self.tolerance = tolerance
+        self.keep_first = keep_first
+        self.first_predictor = None
+
+    def select(self, max_samples, current_data, new_data):
+        """Select samples. If there are no predictors, act as a FIFO memory."""
+        merged = utils.merge_datadicts([current_data, new_data])
+        if 'yhat' not in merged:
+            logging.warning("No predictions available, using FIFO memory.")
+            return FIFOMemory().select(max_samples, current_data, new_data)
+        entropy = self.entropy(merged['yhat'])
+        max_entropy_idx = np.argsort(entropy)[-max_samples:]
+        return {k: v[max_entropy_idx] for k, v in merged.items()}
+
+    def update_predictor(self, predictor):
+        """Add new predictor to the committee."""
+        if self.keep_first and self.first_predictor is None:
+            self.first_predictor = predictor
+        predictors = [] if self.predictor is None else self.predictor
+        predictors.append(predictor)
+        if self.predictor_members is not None:
+            predictors = predictors[-self.predictor_members:]
+            if (len(predictors) == self.predictor_members) and self.keep_first:
+                # Ensure that the first predictor is not kicked out.
+                predictors[0] = self.first_predictor
+        super().update_predictor(predictors)
+
+    def update_predictors(self, predictors):
+        """Set the committee directly, removing all current predictors.
+
+        Note: if you provide more predictors than `committee_size`, the first
+        ones will be discarded. Keep this in mind when using `keep_first`.
+        If there is no previous predictor, only the first non-discarded
+        predictor will be remembered.
+        """
+        if ((self.predictor_members is not None)
+            and (len(predictors) > self.predictor_members)):
+            logging.warning("Too many predictors for committee size."
+                            "Discarding the first ones.")
+            predictors = predictors[-self.predictor_members:]
+        self.predictor = None  # Remove all current predictors.
+        for predictor in predictors:
+            self.update_predictor(predictor)
+
+    def predict(self, x):
+        """Predictions from whole committee."""
+        predictions = []
+        for predictor in self.predictor:
+            prediction = self.predict_probabilities(predictor, x)
+            assert len(prediction.shape) == 2  # batch x class probls
+            assert prediction.shape[0] == len(x)
+            predictions.append(prediction[..., np.newaxis])
+        return np.concatenate(predictions, axis=2)
+
+    def predict_probabilities(self, predictor, x) -> np.array:
+        """Predict on all models in the committee.
+
+        Returns an array (sample x prediction x model).
+        """
+        return predictor(x)
+
+    def entropy(self, probabilities) -> np.array:
+        """Return the entropy of the predictions."""
+        average = np.mean(probabilities, axis=2)
+        p_small = np.isclose(average, 0, atol=self.tolerance)
+        # While we don't use the inf values, we still get warnings -> ignore.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return -np.sum(np.where(p_small, 0.0, average * np.log2(average)),
+                           axis=1)
 
 
 class FIFOMemory(NoPredictorMemoryBase):
